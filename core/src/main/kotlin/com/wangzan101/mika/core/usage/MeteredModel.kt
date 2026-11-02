@@ -3,6 +3,7 @@ package com.wangzan101.mika.core.usage
 import com.wangzan101.mika.core.model.ChatModel
 import com.wangzan101.mika.core.model.Message
 import com.wangzan101.mika.core.model.ModelReply
+import com.wangzan101.mika.core.model.ModelExecutionPolicy
 import com.wangzan101.mika.core.model.ModelRole
 import com.wangzan101.mika.core.model.StreamingChatModel
 import com.wangzan101.mika.core.model.ToolSpec
@@ -48,6 +49,8 @@ private open class MeteredModel(private val inner: ChatModel, protected val sour
         counted { inner.complete(system, messages, tools) }
 
     protected suspend fun counted(call: suspend () -> ModelReply): ModelReply {
+        // 在计量的 try/catch 之外拦截：没有调用底层模型，不能记录一次失败请求。
+        ModelExecutionPolicy.checkAllowed("metered")
         // 在一次运行里调用的,也记到这次运行名下(见 RunUsageTally)
         val tally = currentCoroutineContext()[RunUsageTally]
         val reply = try {

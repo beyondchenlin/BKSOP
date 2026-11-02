@@ -26,8 +26,10 @@ internal data class RawResponse(val status: Int, val retryAfter: String?, val bo
 
 /** 各适配器共用的 HTTP 执行(enqueue + 协程取消)与 Retry-After 解析。 */
 internal object HttpSupport {
-    suspend fun execute(http: OkHttpClient, req: Request): RawResponse =
-        observe(req) { attempt -> executeRaw(http, req, attempt) }.also(::requireProxyAccepted)
+    suspend fun execute(http: OkHttpClient, req: Request): RawResponse {
+        ModelExecutionPolicy.checkAllowed("http_execute")
+        return observe(req) { attempt -> executeRaw(http, req, attempt) }.also(::requireProxyAccepted)
+    }
 
     /** HTTP 407 只会是途中的代理要账号密码(或拒了给的),不是服务商的回复。 */
     private fun requireProxyAccepted(raw: RawResponse) {
@@ -78,8 +80,10 @@ internal object HttpSupport {
      * SSE 按事件交付；取消协程会同时取消 HTTP 请求。流读到头时由调用者按各自协议判断有没有正常收尾，
      * 没收尾算 [ModelError.StreamCut]。一个事件都没有、又不是事件流格式的成功响应(比如地址指到了网页)算 [ModelError.BadResponse]。
      */
-    suspend fun stream(http: OkHttpClient, req: Request, onEvent: (String) -> Unit): RawResponse =
-        observe(req) { attempt -> streamRaw(http, req, attempt, onEvent) }.also(::requireProxyAccepted)
+    suspend fun stream(http: OkHttpClient, req: Request, onEvent: (String) -> Unit): RawResponse {
+        ModelExecutionPolicy.checkAllowed("http_stream")
+        return observe(req) { attempt -> streamRaw(http, req, attempt, onEvent) }.also(::requireProxyAccepted)
+    }
 
     private suspend fun streamRaw(http: OkHttpClient, req: Request, attempt: TraceCall.Attempt?, onEvent: (String) -> Unit): RawResponse = suspendCancellableCoroutine { cont ->
         val call = http.newCall(req)
