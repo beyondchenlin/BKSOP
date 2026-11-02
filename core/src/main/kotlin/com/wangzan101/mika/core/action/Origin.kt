@@ -65,6 +65,14 @@ sealed interface Origin {
         override val policy get() = MCP_TOOL
     }
 
+    /**
+     * 已验证固定流程的一步；不借用普通智能体的付款授权或自主模式。
+     * [allowExternalEffects] 仅在本次运行已授权且此步骤明确声明对外业务效果时为 true，仍不放行付款。
+     */
+    data class Workflow(override val step: Int, val allowExternalEffects: Boolean = false) : Origin {
+        override val policy get() = WORKFLOW
+    }
+
     companion object {
         /** 一个页面脚本动作的上限:打开网址最多等 20 秒加载,再留余量等页面安静。 */
         const val SCRIPT_ACTION_CAP_MS = 40_000L
@@ -94,6 +102,11 @@ sealed interface Origin {
         )
         private val MCP_TOOL = OriginPolicy(
             "mcp_tool", usesGrant = false, judgeWithoutGate = true, refuseUnresolved = true, stopOnGuardWarning = true,
+            gatedByCaller = false, isolatedReads = false, actionCapMs = null, frames = Frames.None, routeTargets = false,
+            recordsRefusal = true, refusals = RefusalStyle.Code,
+        )
+        private val WORKFLOW = OriginPolicy(
+            "workflow", usesGrant = false, judgeWithoutGate = true, refuseUnresolved = true, stopOnGuardWarning = true,
             gatedByCaller = false, isolatedReads = false, actionCapMs = null, frames = Frames.None, routeTargets = false,
             recordsRefusal = true, refusals = RefusalStyle.Code,
         )

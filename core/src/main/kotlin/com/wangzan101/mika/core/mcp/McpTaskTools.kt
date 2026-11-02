@@ -23,6 +23,7 @@ import kotlinx.serialization.json.putJsonObject
 class McpTaskTools(
     private val service: RemoteTaskService,
     device: DeviceAccess? = null,
+    private val workflowTools: McpWorkflowTools? = null,
 ) {
     constructor(tasks: RemoteTasks, pollMs: Long = 250, device: DeviceAccess? = null) :
         this(RemoteTaskService(tasks, pollMs), device)
@@ -73,7 +74,7 @@ class McpTaskTools(
             schema(required = emptyList()) {
                 putJsonObject("limit") { put("type", "integer"); put("minimum", 1); put("maximum", MAX_LIST); put("description", "How many (default $DEFAULT_LIST).") }
             }, readOnly = true),
-    ) + deviceTools?.tools.orEmpty()
+    ) + deviceTools?.tools.orEmpty() + workflowTools?.tools.orEmpty()
 
     /** MCP 的工具定义(tools/list 的一项)。 */
     fun definitions(): JsonArray = buildJsonArray {
@@ -85,7 +86,7 @@ class McpTaskTools(
                 putJsonObject("annotations") {
                     put("readOnlyHint", t.readOnly)
                     if (!t.readOnly) put("destructiveHint", t.name != ANSWER)
-                    put("openWorldHint", t.name == RUN || t.name == STEER)
+                    put("openWorldHint", t.name == RUN || t.name == STEER || t.name == McpWorkflowTools.RUN)
                 }
             })
         }
@@ -125,7 +126,8 @@ class McpTaskTools(
                     }
                 }
             }
-            else -> if (deviceTools?.tools?.any { it.name == name } == true) deviceTools.call(name, args)
+            else -> if (workflowTools?.has(name) == true) workflowTools.call(name, args)
+                else if (deviceTools?.tools?.any { it.name == name } == true) deviceTools.call(name, args)
                 else throw ToolError("Unknown tool: $name")
         }
     } catch (e: RemoteTaskError) {

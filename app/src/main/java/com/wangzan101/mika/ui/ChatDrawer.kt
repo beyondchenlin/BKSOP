@@ -211,6 +211,7 @@ fun ChatDrawer(
     onAbout: () -> Unit = {},
     /** 有新版本:「关于 Mika」带小红点。 */
     aboutDot: Boolean = false,
+    onWorkflows: () -> Unit = {},
     /** 长按一条存过的对话:在它原地弹出操作菜单(置顶、改名、删除);带上那一行在窗口里的位置和大小。 */
     onActions: (DrawerConversation, Rect) -> Unit = { _, _ -> },
 ) {
@@ -229,7 +230,7 @@ fun ChatDrawer(
         ) {
             MikaLogo(36.dp, corner = 10.dp)
             Column {
-                Text("Mika", style = MikaType.Title, color = c.ink)
+                Text(stringResource(R.string.app_name), style = MikaType.Title, color = c.ink)
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                     Box(Modifier.size(6.dp).background(if (ok) c.ok else c.warnSolid, CircleShape))
                     Text(state, style = MikaType.Hint, fontWeight = FontWeight.Medium, color = c.ink3)
@@ -240,6 +241,7 @@ fun ChatDrawer(
             NavEntry(MikaIcons.New, stringResource(R.string.chat_new), enabled = canSwitch, onClick = onNew)
             NavEntry(MikaIcons.Clock, stringResource(R.string.drawer_plans), onClick = onPlans)
             NavEntry(MikaIcons.Heart, stringResource(R.string.memory_and_skills), onClick = onMemory)
+            NavEntry(MikaIcons.Route, stringResource(R.string.workflow_title), onClick = onWorkflows)
             NavEntry(MikaIcons.Globe, stringResource(R.string.drawer_browser), onClick = onBrowser)
         }
         // 侧栏关着时列表只剩末尾那一项;打开时对话插在它前面,列表会按原来那一项停在最底下。最上面一项变了就回到顶上
@@ -490,6 +492,7 @@ fun ChatWithDrawer(
     /** 从侧栏进去的页面刚退回来:当场打开侧栏,回到进去之前的样子。 */
     reopen: Boolean = false,
     onReopened: () -> Unit = {},
+    onWorkflows: () -> Unit = {},
     content: @Composable (openDrawer: () -> Unit) -> Unit,
 ) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
@@ -578,6 +581,7 @@ fun ChatWithDrawer(
                     onNew = { close { vm.newConversation() } },
                     onPlans = { leave(onPlans) },
                     onMemory = { leave(onMemory) },
+                    onWorkflows = { leave(onWorkflows) },
                     onSettings = { leave(onSettings) },
                     onBrowser = { leave(onBrowser) },
                     onScreens = { leave(onScreens) },

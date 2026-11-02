@@ -2,6 +2,9 @@ package com.wangzan101.mika.ui
 
 import com.wangzan101.mika.i18n.AppLanguage
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.Text
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Modifier
 import com.wangzan101.mika.ui.components.KeyboardDismissArea
 import android.Manifest
@@ -27,11 +30,13 @@ import com.wangzan101.mika.confirm.ConfirmationNotifier
 import com.wangzan101.mika.memory.MemoryRuntime
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
@@ -42,6 +47,7 @@ import com.wangzan101.mika.cap.web.WebHandover
 import com.wangzan101.mika.cap.web.WebSites
 import com.wangzan101.mika.browser.UserBrowser
 import com.wangzan101.mika.BuildConfig
+import com.wangzan101.mika.R
 import com.wangzan101.mika.MikaApp
 import com.wangzan101.mika.about.Diagnostics
 import com.wangzan101.mika.about.DiagnosticsCollector
@@ -62,6 +68,11 @@ import com.wangzan101.mika.ui.theme.MikaTheme
 import com.wangzan101.mika.ui.theme.animationsOff
 import com.wangzan101.mika.ui.theme.appearanceDark
 import com.wangzan101.mika.ui.theme.systemBarsFor
+import com.wangzan101.mika.workflow.AndroidWorkflows
+import com.wangzan101.mika.workflow.WorkflowScreen
+import com.wangzan101.mika.ui.components.MikaButton
+import com.wangzan101.mika.ui.components.PageScaffold
+import com.wangzan101.mika.ui.theme.MikaType
 
 class MainActivity : ComponentActivity() {
     private lateinit var monitor: SystemStatusMonitor
@@ -307,6 +318,7 @@ private fun MikaRoot(store: ProviderStore, monitor: SystemStatusMonitor, activit
                 conversationTitle = { ConversationStore.shared(context).title(it) },
                 onPlans = { nav.pushFromDrawer(Route.Plans) },
                 onMemory = { nav.pushFromDrawer(Route.Memory) },
+                onWorkflows = { nav.pushFromDrawer(Route.Workflows) },
                 onSettings = { nav.pushFromDrawer(Route.Settings) },
                 onBrowser = { nav.pushFromDrawer(Route.Browser) },
                 onScreens = { nav.pushFromDrawer(Route.Screens) },
@@ -378,6 +390,36 @@ private fun MikaRoot(store: ProviderStore, monitor: SystemStatusMonitor, activit
         )
         Route.License -> LicensesScreen(onBack = back)
         Route.Browser -> BrowserScreen(remember { UserBrowser.of(context) }, onBack = back)
+        Route.Workflows -> {
+            var retry by remember { mutableIntStateOf(0) }
+            val loaded by produceState<Result<AndroidWorkflows>?>(null, retry) {
+                value = null
+                value = try {
+                    Result.success(withContext(Dispatchers.IO) { AndroidWorkflows.get(context) })
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (failure: Exception) {
+                    Result.failure(failure)
+                }
+            }
+            val result = loaded
+            if (result != null && result.isSuccess) {
+                WorkflowScreen(result.getOrThrow(), onBack = back)
+            } else {
+                PageScaffold(stringResource(R.string.workflow_title), onBack = back) {
+                    val failure = result?.exceptionOrNull()
+                    if (failure == null) {
+                        Text(stringResource(R.string.workflow_loading), style = MikaType.Body, color = MikaTheme.colors.ink2)
+                    } else {
+                        Text(
+                            stringResource(R.string.workflow_initialization_error, failure.message ?: failure.javaClass.simpleName),
+                            style = MikaType.Body, color = MikaTheme.colors.warn,
+                        )
+                        MikaButton(stringResource(R.string.workflow_retry), { retry++ }, Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
         Route.Memory -> {
             // 第一次取记忆要读盘解密,放到后台线程;页面的协程跟着这一屏走
             val vmScope = rememberCoroutineScope()

@@ -125,6 +125,8 @@ class AndroidScreen(
      */
     private val awaitApp: suspend (packageName: String, user: Int?, timeoutMs: Long, free: suspend () -> Boolean) -> AppWait =
         { _, _, _, _ -> AppWait.Unsupported },
+    /** 固定流程在每次实际输入前重核许可、锁屏及连接；默认保持普通任务行为。回调拒绝须原样抛出。 */
+    private val beforeDispatch: suspend () -> Unit = {},
 ) : ScreenPort {
     /** 屏还没建时为 -1;只在确认屏已建好之后用。 */
     private val displayId get() = display.current?.displayId ?: -1
@@ -402,6 +404,7 @@ class AndroidScreen(
     // 双击只能是一次手势里的两笔:分两次下发,中间的回调延迟可能超过系统认双击的时限
     private suspend fun doubleTapAt(at: Pair<Int, Int>): Boolean {
         delay(pacing.approach())
+        beforeDispatch()
         return a11y.taps(displayId, at.first.toFloat(), at.second.toFloat(), 2, pacing.doublePress(), pacing.doubleGap())
     }
 
@@ -417,6 +420,7 @@ class AndroidScreen(
             // 一根手指照着画好的路径走,按节奏排快慢;几根手指一起动的只让时长浮动一点
             if (paths.size == 1) return@verified drag(paths.single(), durationMs, bow = false)
             delay(pacing.approach())
+            beforeDispatch()
             a11y.gesture(displayId, paths.map(::pathOf), pacing.duration(durationMs))
         }
     }
@@ -440,7 +444,7 @@ class AndroidScreen(
             return@withContext if (r is ActionResult.Ok && relocatedTo != null) r.copy(relocated = true, relocatedTo = relocatedTo) else r
         }
         val action = if (down) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
-        verified(relocatedTo = relocatedTo) { node.performAction(action) }
+        verified(relocatedTo = relocatedTo) { beforeDispatch(); node.performAction(action) }
     }
 
     /**
@@ -465,12 +469,12 @@ class AndroidScreen(
 
     override suspend fun back(): ActionResult = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext NO_APP_OPEN
-        verified { shell.injectKey(displayId, KeyEvent.KEYCODE_BACK) }
+        verified { beforeDispatch(); shell.injectKey(displayId, KeyEvent.KEYCODE_BACK) }
     }
 
     override suspend fun pressKey(keyCode: Int): ActionResult = withContext(Dispatchers.IO) {
         if (!hasDisplay) return@withContext NO_APP_OPEN
-        verified { shell.injectKey(displayId, keyCode) }
+        verified { beforeDispatch(); shell.injectKey(displayId, keyCode) }
     }
 
     override suspend fun typeText(ref: String?, snapshotId: String?, text: String): ActionResult = withContext(Dispatchers.IO) {
@@ -486,7 +490,10 @@ class AndroidScreen(
         }
         var field = found.node
         val original = FieldShape.of(field)
-        if (!field.isFocused) field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        if (!field.isFocused) {
+            beforeDispatch()
+            field.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        }
         val web = inWebView(field)
         // 网页编辑区要粘贴才收得到输入;密码框不经剪贴板
         var pasteUnavailable = web && field.isPassword
@@ -504,6 +511,13 @@ class AndroidScreen(
                 if (!web || pasteUnavailable) return setText(field, text)
                 return when (val r = inputText(field, text)) {
                     null -> { pasteUnavailable = true; setText(field, text) }
+                    else -> r
+                }
+            }
+            override suspend fun writeChecked(text: String): Boolean {
+                if (!web || pasteUnavailable) return checkedSetText(field, text)
+                return when (val r = checkedInputText(field, text)) {
+                    null -> { pasteUnavailable = true; checkedSetText(field, text) }
                     else -> r
                 }
             }
@@ -544,7 +558,7 @@ class AndroidScreen(
             }
         }
         val field = found.node
-        verified(relocatedTo = found.relocatedTo) { if (inWebView(field)) inputText(field, "") == true else setText(field, "") }
+        verified(relocatedTo = found.relocatedTo) { if (inWebView(field)) checkedInputText(field, "") == true else checkedSetText(field, "") }
     }
 
     // ---------- 树里看不到的输入框 ----------
@@ -610,29 +624,33 @@ class AndroidScreen(
      * 剪贴板换成 [text]、全选、Ctrl+V,等 App 读走(画面变了)或超时再还原。返回 null:剪贴板不能安全使用(读不到用户原来的内容),
      * 什么都没动;false:粘贴键发不出去。剪贴板的保存、还原、加密留底和 [inputText] 同一套。
      */
-    private fun pasteUnseen(text: String, beforeFrame: IntArray?): Boolean? {
-        clipLock.lock()
+    private suspend fun pasteUnseen(text: String, beforeFrame: IntArray?): Boolean? = clipboardTransaction {
         clipHeld(true)
         try {
-            if (runCatching { shell.setClipText(text) }.getOrDefault(ShellService.CLIP_FAILED) != ShellService.CLIP_SET) return null
+            if (runCatching { shell.setClipText(text) }.getOrDefault(ShellService.CLIP_FAILED) != ShellService.CLIP_SET) return@clipboardTransaction null
             runCatching { shell.savedClipText() }.getOrNull()?.let { clipSaved(it, text) }
             ctrlKey(KeyEvent.KEYCODE_A)
-            if (!ctrlKey(KeyEvent.KEYCODE_V)) return false
+            if (!ctrlKey(KeyEvent.KEYCODE_V)) return@clipboardTransaction false
             // App 处理粘贴键时就读剪贴板:画面变了再还原,最多等一会儿
             val deadline = SystemClock.uptimeMillis() + PASTE_WAIT_MS
             while (SystemClock.uptimeMillis() < deadline && !FrameMath.differs(beforeFrame, frameSignature())) Thread.sleep(POLL_MS)
-            return true
+            true
         } finally {
             runCatching { shell.restoreClip() }
             clipHeld(false)
-            clipLock.unlock()
         }
     }
 
     /** 和 [typeUnseen] 同样的前提;全选后按删除键,没弹输入法而界面一点没变时请模型先点输入框([UnseenField.cleared])。 */
     private suspend fun clearUnseen(atPoint: Boolean = false): ActionResult {
         val keyboardUp = imeBox() != null
-        val r = verified { ctrlKey(KeyEvent.KEYCODE_A) && shell.injectKey(displayId, KeyEvent.KEYCODE_DEL) }
+        val r = verified {
+            beforeDispatch()
+            if (!ctrlKey(KeyEvent.KEYCODE_A)) false else {
+                beforeDispatch()
+                shell.injectKey(displayId, KeyEvent.KEYCODE_DEL)
+            }
+        }
         return UnseenField.cleared(r, keyboardUp, atPoint)
     }
 
@@ -691,10 +709,13 @@ class AndroidScreen(
         val before = if (hasDisplay) topWindowPackage().takeIf { it != chooserPackage } else null
         val id = display.get().displayId
         beforeOpen(packageName, user)
-        fun launch() = when {
-            user != null -> shell.startAppInUser(id, packageName, user, cold)
-            cold -> shell.restartApp(id, packageName)
-            else -> shell.startApp(id, packageName)
+        suspend fun launch(): Int {
+            beforeDispatch()
+            return when {
+                user != null -> shell.startAppInUser(id, packageName, user, cold)
+                cold -> shell.restartApp(id, packageName)
+                else -> shell.startApp(id, packageName)
+            }
         }
         var code = launch()
         val retryUntil = SystemClock.uptimeMillis() + IN_USE_RETRY_MS
@@ -826,6 +847,7 @@ class AndroidScreen(
             val targets = chooserTargets(packageName, before) ?: break
             if (tried >= targets.size) break
             val (x, y) = targets[tried++]
+            beforeDispatch()
             if (!runCatching { shell.injectTap(displayId, x, y) }.getOrDefault(false)) break
             val deadline = SystemClock.uptimeMillis() + LAUNCH_WAIT_MS
             while (foregroundTaskPackage() != packageName && SystemClock.uptimeMillis() < deadline) delay(POLL_MS)
@@ -834,9 +856,11 @@ class AndroidScreen(
             opened()?.let { return it }
             shown = userOf(topTask())
             Log.i(TAG, "chooser option $tried opened user $shown, not the requested $user")
+            beforeDispatch()
             runCatching { shell.injectKey(displayId, KeyEvent.KEYCODE_BACK) }
             waitStable(SETTLE_CAP_MS)
             if (tried >= targets.size) break
+            beforeDispatch()
             if (runCatching { shell.startAppInUser(displayId, packageName, user, false) }.getOrDefault(ShellService.START_ERROR) != ShellService.START_OK) break
             val until = SystemClock.uptimeMillis() + LAUNCH_WAIT_MS
             while (chooserTargets(packageName, before) == null && SystemClock.uptimeMillis() < until) {
@@ -1339,6 +1363,7 @@ class AndroidScreen(
 
     /** 把开到主屏上的任务挪到 Mika 的屏(只挪,不替它重新打开),等它到最上面;挪不动为 null。 */
     private suspend fun pullBack(a: MainScreenSpill.Arrival, pkg: String, byUser: Boolean = false): Spill? {
+        beforeDispatch()
         if (!runCatching { shell.moveTask(a.taskId, displayId) }.getOrDefault(false)) {
             Log.w(TAG, "could not move task ${a.taskId} ($pkg) from the main screen")
             return null
@@ -1689,7 +1714,10 @@ class AndroidScreen(
     /** 优先对节点(或最近的可点祖先)发点击;不行再在其中心做手势,最后注入触摸。 */
     private suspend fun click(node: AccessibilityNodeInfo): Boolean {
         val target = ancestorOrSelf(node) { it.isClickable && it.isEnabled }
-        if (target != null && target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        if (target != null) {
+            beforeDispatch()
+            if (target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        }
         val rect = android.graphics.Rect().also { node.getBoundsInScreen(it) }
         return touch(pacing.within(rect.left, rect.top, rect.right, rect.bottom))
     }
@@ -1701,8 +1729,10 @@ class AndroidScreen(
         val (x, y) = at
         delay(pacing.approach())
         val press = pacing.press()
+        beforeDispatch()
         if (a11y.gesture(displayId, Path().apply { moveTo(x.toFloat(), y.toFloat()) }, press)) return true
         if (pacing.paced && injectStroke(listOf(GesturePacing.Point(x.toDouble(), y.toDouble(), 0), GesturePacing.Point(x.toDouble(), y.toDouble(), press)))) return true
+        beforeDispatch()
         return shell.injectTap(displayId, x, y)
     }
 
@@ -1711,21 +1741,29 @@ class AndroidScreen(
      * 助手注不了时退回无障碍手势沿同一条弧线走(系统按路径匀速走,只少了快慢)。不加节奏时和以前一样:无障碍手势按给定时长匀速走折线。
      */
     private suspend fun drag(points: List<Pair<Int, Int>>, durationMs: Long, bow: Boolean): Boolean {
-        if (!pacing.paced) return a11y.gesture(displayId, pathOf(points), durationMs)
+        if (!pacing.paced) {
+            beforeDispatch()
+            return a11y.gesture(displayId, pathOf(points), durationMs)
+        }
         delay(pacing.approach())
         val stroke = pacing.stroke(points.map { it.first.toDouble() to it.second.toDouble() }, durationMs, bow, display.width to display.height)
         if (injectStroke(stroke.points)) return true
+        beforeDispatch()
         return a11y.gesture(displayId, pathOf(stroke.points.map { it.x.roundToInt() to it.y.roundToInt() }), stroke.durationMs)
     }
 
-    private fun injectStroke(points: List<GesturePacing.Point>): Boolean = runCatching {
-        shell.injectStroke(
-            displayId,
-            IntArray(points.size) { points[it].x.roundToInt() },
-            IntArray(points.size) { points[it].y.roundToInt() },
-            LongArray(points.size) { points[it].t },
-        )
-    }.getOrDefault(false)
+    private suspend fun injectStroke(points: List<GesturePacing.Point>): Boolean {
+        // 回调在原生失败捕获之外，拒绝/取消不能被当成手势失败后继续走备用输入。
+        beforeDispatch()
+        return runCatching {
+            shell.injectStroke(
+                displayId,
+                IntArray(points.size) { points[it].x.roundToInt() },
+                IntArray(points.size) { points[it].y.roundToInt() },
+                LongArray(points.size) { points[it].t },
+            )
+        }.getOrDefault(false)
+    }
 
     private fun pathOf(points: List<Pair<Int, Int>>) = Path().apply {
         moveTo(points.first().first.toFloat(), points.first().second.toFloat())
@@ -1739,10 +1777,38 @@ class AndroidScreen(
     private fun inWebView(node: AccessibilityNodeInfo) = ancestorOrSelf(node) { it.className == WEB_VIEW } != null
 
     /**
+     * 等剪贴板锁时允许取消，取得锁前最后一次重核宿主状态。成功取锁后 block 全程同步：
+     * java Lock 不能跨协程挂起，否则可能换线程解锁。已开始的粘贴事务只完成输入及必要还原，
+     * 不能把停止解释为撤回已发出的输入；下一次重试必须重新经过此门。
+     */
+    private suspend fun <T> clipboardTransaction(block: () -> T): T {
+        while (true) {
+            beforeDispatch()
+            if (clipLock.tryLock()) break
+            delay(POLL_MS)
+        }
+        try { return block() }
+        finally { clipLock.unlock() }
+    }
+
+    private suspend fun checkedInputText(node: AccessibilityNodeInfo, text: String): Boolean? {
+        if (text.isEmpty()) {
+            beforeDispatch()
+            return inputText(node, text)
+        }
+        return clipboardTransaction { inputText(node, text, clipboardLockHeld = true) }
+    }
+
+    private suspend fun checkedSetText(node: AccessibilityNodeInfo, text: String): Boolean {
+        beforeDispatch()
+        return setText(node, text)
+    }
+
+    /**
      * 选中原内容后粘贴(或按删除键清空)。返回 null 表示剪贴板不能安全使用(读不到用户原来的内容等),没有改动任何东西。
      * 剪贴板只在这一次粘贴期间是 Mika 的:App 读完(字变了)或超时就还原。
      */
-    private fun inputText(node: AccessibilityNodeInfo, text: String): Boolean? {
+    private fun inputText(node: AccessibilityNodeInfo, text: String, clipboardLockHeld: Boolean = false): Boolean? {
         node.refresh()
         val before = node.text?.toString().orEmpty()
         fun selectAll() {
@@ -1757,7 +1823,7 @@ class AndroidScreen(
             selectAll()
             return before.isEmpty() || shell.injectKey(displayId, KeyEvent.KEYCODE_DEL)
         }
-        clipLock.lock()
+        if (!clipboardLockHeld) clipLock.lock()
         clipHeld(true)
         try {
             if (runCatching { shell.setClipText(text) }.getOrDefault(ShellService.CLIP_FAILED) != ShellService.CLIP_SET) return null
@@ -1774,7 +1840,7 @@ class AndroidScreen(
         } finally {
             runCatching { shell.restoreClip() }
             clipHeld(false)
-            clipLock.unlock()
+            if (!clipboardLockHeld) clipLock.unlock()
         }
     }
 
