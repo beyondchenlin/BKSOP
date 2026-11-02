@@ -68,14 +68,14 @@
 | 工具 | 必要输入与作用 |
 | --- | --- |
 | `bksop_workflow_list` | 可选 `device_id`；列出当前手机上启用、验证环境匹配且明确授权的流程及参数结构 |
-| `bksop_workflow_run` | `device_id`、`installation_id`、`workflow_version`、`request_id`、`parameters`；明确提交一次任务 |
-| `bksop_workflow_status` | `device_id` 及 `run_id` / `request_id` 之一；只读查回手机持久账本 |
-| `bksop_workflow_resume` | `device_id`、`run_id`、当前 `wait_id`、`state_version`、布尔 `answer`；只回答当前等待项 |
-| `bksop_workflow_cancel` | `device_id`、`run_id`；停止后续操作，不撤销已发出的效果 |
+| `bksop_workflow_run` | `device_id`、`installation_id`、`workflow_version`、`arguments.request_id`、`parameters`；明确提交一次任务 |
+| `bksop_workflow_status` | `device_id` 及 `arguments.run_id` / `arguments.request_id` 之一；只读查回手机持久账本 |
+| `bksop_workflow_resume` | `device_id`、`arguments.run_id`、当前 `arguments.wait_id`、`state_version`、布尔 `answer`；只回答当前等待项 |
+| `bksop_workflow_cancel` | `device_id`、`arguments.run_id`；停止后续操作，不撤销已发出的效果 |
 
 正常启动可带明确 `adaptation_version`；真实业务需要 `allow_external_effects: true`。调用方身份由连接宿主注入，客户端不能提交 `caller_id`。界面动作、自然语言目标和模板版本不能通过启动参数覆盖。
 
-外部工具应保留同一业务请求的 `request_id`。启动响应丢失时按它查回，不能制造新编号重发。手机返回查询未找到与连接超时是不同结果；离线时不能拿网关状态替代手机账本。
+外部工具应保留同一业务请求的 `arguments.request_id`。启动响应丢失时按它查回，不能制造新编号重发。手机返回查询未找到与连接超时是不同结果；离线时不能拿网关状态替代手机账本。
 
 状态输出只投影任务状态、步骤状态、等待原因、模型调用计数及本机证据引用，不序列化定义、绑定、完整参数快照、图片或原始界面树。远程授权撤销会阻止后续调用，并停止该流程已受理的远程任务。
 
