@@ -58,7 +58,7 @@ class ConfirmDecision(
     /** 判定放在锁屏等待之后:按此刻重新读的一屏判。 */
     suspend fun judge(tool: String, args: JsonObject, origin: Origin): Decision {
         outwardSite = null
-        if (autonomous || approvals.autonomous()) {
+        if (origin !is Origin.Workflow && (autonomous || approvals.autonomous())) {
             val target = tools.gateTarget(tool)
             if (IrreversibleDetector.needsCheck(target, args)) {
                 val aim = tools.interfaces.actionTarget(tools.declared(tool), args)
@@ -118,6 +118,10 @@ class ConfirmDecision(
         fun audit(decision: String) {
             if (decision != "allowed" || risk.level.outward || risk.payment) recorder?.approval(origin, tool, asked, risk, decision)
         }
+        // 固定流程的授权必须覆盖当前真实动作；不采信共享包把发送、删除等误标为本地操作。
+        // 在两类风险的统一入口检查：工具声明风险，以及按此刻控件/界面识别的风险。
+        if (origin is Origin.Workflow && !origin.allowExternalEffects && (risk.level.outward || risk.payment))
+            return Decision.Denied.also { audit("denied") }
         when (ApprovalPolicy.decide(risk, provenance)) {
             Approval.Allow -> return null.also { audit("allowed") }
             Approval.Deny -> return Decision.Denied.also { audit("denied") }
@@ -163,3 +167,4 @@ class ConfirmDecision(
         }
     }
 }
+

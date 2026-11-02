@@ -3,6 +3,7 @@ package com.wangzan101.mika.core.remote
 import com.wangzan101.mika.core.device.DeviceAccess
 import com.wangzan101.mika.core.mcp.McpRpc
 import com.wangzan101.mika.core.mcp.McpTaskTools
+import com.wangzan101.mika.core.mcp.McpWorkflowTools
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.net.InetAddress
@@ -14,7 +15,7 @@ import java.net.InetAddress
  * 而不是出现了再拒绝。经网关来的请求默认不给,见 docs/dev/remote-mcp.md。
  */
 class RemoteEndpoints(tasks: RemoteTasks, private val serverVersion: String, private val clock: () -> Long = System::currentTimeMillis,
-    device: DeviceAccess? = null) {
+    device: DeviceAccess? = null, private val workflowTools: McpWorkflowTools? = null) {
     private val service = RemoteTaskService(tasks)
     private val clients = LinkedHashMap<String, Long>()
     private val mutable = MutableStateFlow(RemoteActivity())
@@ -23,7 +24,7 @@ class RemoteEndpoints(tasks: RemoteTasks, private val serverVersion: String, pri
     /** 一套协议入口:任务 API 加 MCP。两套只差带不带手机屏幕能力,任务服务和近期活动共用。 */
     private inner class Surface(device: DeviceAccess?) {
         val api = RemoteTaskApi(service, serverVersion, device)
-        val rpc = McpRpc(McpTaskTools(service, device), serverVersion) { remote, name -> seen(remote, name) }
+        val rpc = McpRpc(McpTaskTools(service, device, workflowTools), serverVersion) { remote, name -> seen(remote, name) }
     }
     private val withDevice = Surface(device)
     private val tasksOnly = if (device == null) withDevice else Surface(null)

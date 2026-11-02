@@ -24,7 +24,9 @@ import com.wangzan101.mika.core.tool.ToolExecution
 import com.wangzan101.mika.core.tool.Verb
 import com.wangzan101.mika.core.tool.parseArgs
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
@@ -62,6 +64,9 @@ class ActionExecutor(
     private val pacing: OutwardPacing = OutwardPacing.Off,
 ) {
     private val decision = ConfirmDecision(tools, confirmations, approvals, recorder = recorder, provenance = provenance, selfPackage = selfPackage, autonomous = autonomous)
+    // 固定来源不能继承普通智能体的自主开关，也不能消费另一次操作的付款确认。
+    private val workflowDecision = ConfirmDecision(tools, null, ApprovalSettings.ASK, recorder = recorder,
+        provenance = provenance, selfPackage = selfPackage, autonomous = false)
     private val pass = ActionPass()
 
     /** 配了确认关卡(付款能经用户同意后做)。 */
@@ -75,6 +80,17 @@ class ActionExecutor(
 
     /** [reads]:页面脚本一次调用里的读单独计数的范围(来源要求隔离时);那里的动作仍按任务计。 */
     private suspend fun run(call: Part.ToolCall, origin: Origin, followUp: FollowUp, reads: GuardScope?): ActionOutcome {
+        currentCoroutineContext().ensureActive()
+        // 网页脚本桥本身不动界面，内部每个动作仍回到这里；跨协程回调不能锁在其父脚本之后。
+        // 手机复合工具(含 phone_run)与普通界面工具全段持有许可；沙箱等无界面工具维持原并发行为。
+        val scriptBridge = tools.composite(call.name) && tools.verb(call.name) == Verb.Script
+        val usesSurface = !tools.offScreen(call.name) && !scriptBridge &&
+            (tools.surfaceOf(call.name) != null || tools.declared(call.name)?.withScreens == true)
+        return if (usesSurface) DeviceExecutionGate.withExclusive { runPermitted(call, origin, followUp, reads) }
+        else runPermitted(call, origin, followUp, reads)
+    }
+
+    private suspend fun runPermitted(call: Part.ToolCall, origin: Origin, followUp: FollowUp, reads: GuardScope?): ActionOutcome {
         val args = parseArgs(call.argsJson)
         // 不动屏幕的工具(沙箱一类):不进屏幕守卫,由各自的守卫另管
         val offScreen = tools.offScreen(call.name)
@@ -127,6 +143,7 @@ class ActionExecutor(
         val writing = tools.writesScreen(call.name)
         if (writing && !policy.gatedByCaller) gate()
         // 没有可用的同意就不执行,也不计入失败熔断
+        val decision = if (origin is Origin.Workflow) workflowDecision else this.decision
         val d = decision.judge(call.name, args, origin)
         when (d) {
             is Decision.Required -> return blocked(call, args, origin, before, d.hit, null, followUp)
@@ -161,6 +178,8 @@ class ActionExecutor(
         site?.let(tools::outwardStart)
         var done = false
         try {
+            // 许可等待、锁屏等待或动作节奏期间已取消的任务，不能再进入不可取消区开始新动作。
+            currentCoroutineContext().ensureActive()
             val outcome = if (policy.actionCapMs == null) ran(step) else withContext(NonCancellable) { ran(step) }
             if (screenPaced && outcome is ActionOutcome.Ran) tools.afterWrite(call.name, outcome.exec.content)
             if (site != null && outcome is ActionOutcome.Ran && outcome.exec.content["ok"] != JsonPrimitive(false)) {
@@ -195,7 +214,7 @@ class ActionExecutor(
         // 页面脚本里的每个动作经这里回来,同样走完整个入口;脚本里的读只在这一次调用里计数
         val subVerdicts = mutableListOf<GuardVerdict>()
         val sub = if (tools.composite(call.name)) {
-            val script = Origin.Script(n)
+            val script: Origin = if (s.origin is Origin.Workflow) s.origin else Origin.Script(n)
             val window = if (script.policy.isolatedReads) GuardScope(canStop = false) else null
             SubActions { c ->
                 val o = run(c, script, FollowUp.NONE, window)
@@ -258,6 +277,7 @@ class ActionExecutor(
 
     private suspend fun execute(s: Step, sub: SubActions?): ToolExecution {
         val call = if (s.offScreen && offScreen != null) offScreen.capTimeout(s.call, s.args) else s.call
+        currentCoroutineContext().ensureActive()
         val cap = s.origin.policy.actionCapMs ?: return tools.execute(call, pass, s.origin.step, sub)
         // 动作自己有上限
         return withTimeoutOrNull(cap) { tools.execute(call, pass, s.origin.step, sub) } ?: ToolExecution(buildJsonObject {
