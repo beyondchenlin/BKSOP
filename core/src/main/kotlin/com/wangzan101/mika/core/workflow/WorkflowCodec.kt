@@ -10,7 +10,7 @@ object WorkflowCodec {
     const val MAX_PACKAGE_BYTES = 1024 * 1024
     val json = Json { encodeDefaults = true; prettyPrint = true; ignoreUnknownKeys = false }
     private val identifier = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
-    private val reference = Regex("\\{\\{(param|binding)\\.([A-Za-z0-9][A-Za-z0-9._-]{0,127})}}")
+    private val reference = Regex("\\{\\{(param|binding)\\.([A-Za-z0-9][A-Za-z0-9._-]{0,127})\\}\\}")
 
     fun digest(definition: WorkflowDefinition): String = digest(json.encodeToJsonElement(definition))
 
