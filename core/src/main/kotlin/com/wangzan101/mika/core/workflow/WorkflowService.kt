@@ -165,13 +165,18 @@ class WorkflowService(
         if (source == null && request.remainingStepIds.isNotEmpty())
             fail("invalid_recovery", "补做步骤必须明确关联原任务")
         if (source != null) validateRecovery(source, request, item, parameters, bindings)
+        // A confirmed WAIT_USER can be SUCCEEDED before its environment recheck advances nextStep.
+        // Only the completed prefix is shared with the target version; its remaining prompts need new replies.
+        val completedPrefixIds = source?.let { run -> run.definition.steps.take(run.nextStep).map { it.id }.toSet() }.orEmpty()
         val id = newId()
         val run = WorkflowRun(id, request.requestId, callerId, deviceId, item.id,
             item.definition, item.digest, item.adaptationVersion, copy(bindings), copy(parameters),
             requestDigest(request, item.definition, item.adaptationVersion),
             if (mode == WorkflowRunMode.EXECUTION) item.validation?.environment else null, mode, request.allowExternalEffects,
             nextStep = source?.nextStep ?: 0,
-            checkpoints = source?.checkpoints?.filter { it.state == WorkflowStepState.SUCCEEDED } ?: emptyList(),
+            checkpoints = source?.checkpoints?.filter {
+                it.state == WorkflowStepState.SUCCEEDED && it.stepId in completedPrefixIds
+            }.orEmpty(),
             createdAt = time, updatedAt = time, businessRunId = source?.businessRunId ?: id, sourceRunId = source?.id)
         val previous = state.runs.map { if (it.id == source?.id) it.copy(successorRunId = id, updatedAt = time,
             stateVersion = it.stateVersion + 1) else it }

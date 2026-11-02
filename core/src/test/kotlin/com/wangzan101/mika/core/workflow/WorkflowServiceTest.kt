@@ -386,6 +386,72 @@ class WorkflowServiceTest {
         assertEquals(2, port.calls.size)
     }
 
+    @Test fun recoveryDoesNotCarryAnUnadvancedConfirmationIntoAChangedPrompt() = runTest {
+        val port = Port()
+        val service = WorkflowService(MemoryWorkflowStore(), port, this, "device")
+        val action = definition().steps.single()
+        val originalDefinition = definition().copy(steps = listOf(
+            action.copy(id = "prefix", arguments = buildJsonObject { put("text", "prefix") }),
+            WorkflowStep("confirm", "等待用户", kind = WorkflowStepKind.WAIT_USER,
+                prompt = "请确认原提示", before = condition),
+            action.copy(id = "suffix", arguments = buildJsonObject { put("text", "suffix") }),
+        ))
+        val old = service.saveDefinition(originalDefinition)
+        val validation = service.startValidation(old.id, JsonObject(emptyMap()))
+        advanceUntilIdle()
+        val validationWait = service.status(validation.id)
+        service.resume(validation.id, validationWait.waiting!!.id, validationWait.stateVersion, JsonPrimitive(true))
+        advanceUntilIdle()
+        service.setEnabled(old.id, true)
+        port.calls.clear()
+
+        val original = service.start(WorkflowStartRequest(old.id, "original", workflowVersion = "1"))
+        advanceUntilIdle()
+        val waiting = service.status(original.id)
+        assertEquals(WorkflowRunState.WAITING_USER, waiting.state)
+        assertEquals(listOf("prefix"), port.calls.map { it["text"]!!.jsonPrimitive.content })
+        service.resume(original.id, waiting.waiting!!.id, waiting.stateVersion, JsonPrimitive(true))
+        // Do not run the queued continuation: the reply exists, but the current step has not advanced.
+        service.cancel(original.id)
+        advanceUntilIdle()
+        val stopped = service.status(original.id)
+        assertEquals(WorkflowRunState.STOPPED, stopped.state)
+        assertEquals(1, stopped.nextStep)
+        assertEquals(WorkflowStepState.SUCCEEDED, stopped.checkpoints.single { it.stepId == "confirm" }.state)
+        val completedPrefix = stopped.checkpoints.single { it.stepId == "prefix" }
+
+        val revisedPrompt = "请确认修改后的新提示"
+        val newer = service.saveDefinition(originalDefinition.copy(version = "2", steps = originalDefinition.steps.map {
+            if (it.id == "confirm") it.copy(prompt = revisedPrompt) else it
+        }))
+        val newValidation = service.startValidation(newer.id, JsonObject(emptyMap()))
+        advanceUntilIdle()
+        val newValidationWait = service.status(newValidation.id)
+        service.resume(newValidation.id, newValidationWait.waiting!!.id, newValidationWait.stateVersion, JsonPrimitive(true))
+        advanceUntilIdle()
+        service.setEnabled(newer.id, true)
+        port.calls.clear()
+
+        val repair = service.start(WorkflowStartRequest(newer.id, "repair", workflowVersion = "2",
+            adaptationVersion = newer.adaptationVersion, sourceRunId = original.id,
+            remainingStepIds = listOf("confirm", "suffix")))
+        assertEquals(listOf(completedPrefix), repair.checkpoints)
+        advanceUntilIdle()
+        val repairedWait = service.status(repair.id)
+        assertEquals(WorkflowRunState.WAITING_USER, repairedWait.state)
+        assertEquals(1, repairedWait.nextStep)
+        val revisedWait = repairedWait.waiting!!
+        assertEquals(revisedPrompt, revisedWait.prompt)
+        assertTrue(port.calls.isEmpty())
+
+        service.resume(repair.id, revisedWait.id, repairedWait.stateVersion, JsonPrimitive(true))
+        advanceUntilIdle()
+        assertEquals(WorkflowRunState.SUCCEEDED, service.status(repair.id).state)
+        assertEquals(listOf("suffix"), port.calls.map { it["text"]!!.jsonPrimitive.content })
+        assertEquals(completedPrefix, service.status(repair.id).checkpoints.single { it.stepId == "prefix" })
+        assertEquals(stopped.checkpoints, service.status(original.id).checkpoints)
+    }
+
     @Test fun corruptedFilesArePreservedAndNotReplacedByEmptyState() = runTest {
         val directory = Files.createTempDirectory("bksop-corrupt-").toFile()
         try {

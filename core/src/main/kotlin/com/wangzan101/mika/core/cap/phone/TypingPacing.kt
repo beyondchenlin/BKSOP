@@ -94,7 +94,7 @@ class TypingPacing(private val random: Random?, val limits: Limits = Limits()) {
         for ((k, s) in steps.dropLast(1).withIndex()) {
             sleep(s.delayMs)
             val prefix = text.substring(0, s.end)
-            if (!field.write(prefix)) return false
+            if (!field.writeChecked(prefix)) return false
             if (k == 0) {
                 val back = field.read() ?: return false
                 if (back.filterNot { it.isWhitespace() } != prefix.filterNot { it.isWhitespace() }) return false
@@ -146,3 +146,4 @@ class TypingPacing(private val random: Random?, val limits: Limits = Limits()) {
         }
     }
 }
+

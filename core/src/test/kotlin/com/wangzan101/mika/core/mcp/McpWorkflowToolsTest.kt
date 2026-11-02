@@ -17,6 +17,24 @@ import org.junit.Test
 /** Exercises the real fixed service through the MCP adapter; phone actions remain an explicit fake port. */
 @OptIn(ExperimentalCoroutinesApi::class)
 class McpWorkflowToolsTest {
+    @Test fun hostFailuresAreSanitizedWithoutTurningCancellationIntoAResult() = runTest {
+        val unavailable = McpWorkflowTools(
+            service = { throw IllegalStateException("private /data/user/0/example/token.txt SECRET_VALUE") },
+            allowed = { true }, environment = { WorkflowEnvironment("unused") },
+        )
+        val failure = error("workflow_unavailable") { unavailable.call(McpWorkflowTools.LIST, JsonObject(emptyMap())) }
+        assertFalse(failure.message.orEmpty().contains("SECRET_VALUE"))
+        assertFalse(failure.message.orEmpty().contains("/data/"))
+        val cancelled = McpWorkflowTools(
+            service = { throw kotlinx.coroutines.CancellationException("cancelled") },
+            allowed = { true }, environment = { WorkflowEnvironment("unused") },
+        )
+        try {
+            cancelled.call(McpWorkflowTools.LIST, JsonObject(emptyMap()))
+            fail("Cancellation must propagate")
+        } catch (_: kotlinx.coroutines.CancellationException) { }
+    }
+
     private class Port : WorkflowActionPort {
         override val supportedTools = setOf("type")
         var fingerprint = "phone:app-1:permission-yes"

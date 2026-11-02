@@ -95,6 +95,8 @@ internal fun stationary(before: List<ElementLocator>, after: List<ElementLocator
 interface TextField {
     fun read(): String?
     fun write(text: String): Boolean
+    /** 每次真实写入前可挂起核对宿主许可；旧端口保持原同步写入行为。 */
+    suspend fun writeChecked(text: String): Boolean = write(text)
 }
 
 /** 比较前去掉所有空白:输入框可能自动给号码分组加空格。 */
@@ -118,28 +120,28 @@ suspend fun typeAndVerify(
     secret: Boolean = false,
 ): Verification {
     if (secret) {
-        field.write(text)
+        field.writeChecked(text)
         return Verification.UNKNOWN
     }
     val want = normText(text)
     var baseline = field.read() ?: run {
         // 读不出也照常写一次,但无法核对
-        field.write(text)
+        field.writeChecked(text)
         return Verification.UNKNOWN
     }
     if (want.isNotEmpty() && normText(baseline) == want) {
-        field.write("")
+        field.writeChecked("")
         settle()
         baseline = field.read() ?: return Verification.UNKNOWN
         if (normText(baseline) == want) {
-            field.write(text)
+            field.writeChecked(text)
             return Verification.UNKNOWN
         }
     }
     var stuck = true
     var wrote = false
     repeat(attempts) {
-        if (!field.write(text)) return@repeat
+        if (!field.writeChecked(text)) return@repeat
         wrote = true
         settle()
         val actual = field.read() ?: return Verification.UNKNOWN
@@ -148,3 +150,4 @@ suspend fun typeAndVerify(
     }
     return if (wrote && stuck && reacted()) Verification.UNKNOWN else Verification.MISMATCH
 }
+

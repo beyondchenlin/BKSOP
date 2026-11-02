@@ -1,6 +1,7 @@
 package com.wangzan101.mika.core.mcp
 
 import com.wangzan101.mika.core.workflow.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 
 /** Authenticated phone-owner transport only. Callers cannot supply their identity or arbitrary actions. */
@@ -115,6 +116,13 @@ class McpWorkflowTools(
         } catch (e: WorkflowException) {
             // Internal exception details can contain parameter values. Return the stable code only.
             throw McpTaskTools.ToolError("${e.code}: Workflow request rejected; inspect the phone for details.")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: McpTaskTools.ToolError) {
+            throw e
+        } catch (_: Exception) {
+            // Host initialization and permission/storage adapters must not leak their exception payloads.
+            throw McpTaskTools.ToolError("workflow_unavailable: Inspect workflow management on the phone for details.")
         }
     }
 
