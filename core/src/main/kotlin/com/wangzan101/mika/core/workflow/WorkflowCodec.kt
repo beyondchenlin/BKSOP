@@ -25,11 +25,10 @@ object WorkflowCodec {
     }
 
     fun encodePackage(definition: WorkflowDefinition): String =
-        json.encodeToString(WorkflowPackage(definition = definition, digest = digest(definition)))
+        serializePackage(definition).also(::checkPackageSize)
 
     fun decodePackage(text: String): WorkflowPackage {
-        if (text.toByteArray(Charsets.UTF_8).size > MAX_PACKAGE_BYTES)
-            fail("package_too_large", "流程包超过 1 MiB 限制，未导入任何内容")
+        checkPackageSize(text)
         val pack = try { json.decodeFromString<WorkflowPackage>(text) }
         catch (_: Exception) { fail("invalid_package", "流程包格式错误或包含未知字段") }
         if (pack.formatVersion != 1 || pack.definition.formatVersion != 1)
@@ -77,6 +76,17 @@ object WorkflowCodec {
         }
         validateCondition(definition.successCondition)
         validateReferences(json.encodeToJsonElement(definition.successCondition), params, bindings)
+        // 保存/安装的定义必须能按同一标准格式导出并重新导入；包头、摘要和 UTF-8 字节都计入上限。
+        checkPackageSize(serializePackage(definition))
+    }
+
+    // 只负责序列化，不能调用 validateDefinition，避免保存校验与导出入口相互递归。
+    private fun serializePackage(definition: WorkflowDefinition): String =
+        json.encodeToString(WorkflowPackage(definition = definition, digest = digest(definition)))
+
+    private fun checkPackageSize(text: String) {
+        if (text.toByteArray(Charsets.UTF_8).size > MAX_PACKAGE_BYTES)
+            fail("package_too_large", "流程包超过 1 MiB 限制，请减少流程内容")
     }
 
     fun parameters(specs: List<WorkflowParameter>, supplied: JsonObject): JsonObject {

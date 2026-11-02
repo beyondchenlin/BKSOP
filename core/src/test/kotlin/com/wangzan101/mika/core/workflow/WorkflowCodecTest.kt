@@ -1,5 +1,6 @@
 package com.wangzan101.mika.core.workflow
 
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -16,6 +17,14 @@ class WorkflowCodecTest {
 
     private fun assertCode(code: String, action: () -> Unit) {
         try { action(); fail("expected $code") } catch (e: WorkflowException) { assertEquals(code, e.code) }
+    }
+
+    private fun definitionAtPackageLimit(): WorkflowDefinition {
+        val base = definition().copy(description = "x")
+        val descriptionBytes = WorkflowCodec.MAX_PACKAGE_BYTES - WorkflowCodec.encodePackage(base).toByteArray(Charsets.UTF_8).size + 1
+        val multibyte = "界"
+        val characterBytes = multibyte.toByteArray(Charsets.UTF_8).size
+        return base.copy(description = multibyte.repeat(descriptionBytes / characterBytes) + "x".repeat(descriptionBytes % characterBytes))
     }
 
     @Test fun fullReferencesKeepTypesAndEmbeddedReferencesRemainText() {
@@ -40,6 +49,40 @@ class WorkflowCodecTest {
         assertCode("digest_mismatch") { WorkflowCodec.decodePackage(encoded.replace("参数化本机操作", "changed")) }
         assertCode("invalid_package") { WorkflowCodec.decodePackage(encoded.replaceFirst("{", "{\"extra\":1,")) }
         assertCode("unsupported_format") { WorkflowCodec.decodePackage(encoded.replaceFirst("\"formatVersion\": 1", "\"formatVersion\": 9")) }
+    }
+
+    @Test fun standardPackageAtUtf8ByteLimitIsValidAndRoundTrips() {
+        val def = definitionAtPackageLimit()
+        WorkflowCodec.validateDefinition(def, setOf("known"))
+        val encoded = WorkflowCodec.encodePackage(def)
+        assertEquals(WorkflowCodec.MAX_PACKAGE_BYTES, encoded.toByteArray(Charsets.UTF_8).size)
+        assertTrue(encoded.length < WorkflowCodec.MAX_PACKAGE_BYTES)
+        val decoded = WorkflowCodec.decodePackage(encoded)
+        assertEquals(def, decoded.definition)
+        assertEquals(WorkflowCodec.digest(def), decoded.digest)
+    }
+
+    @Test fun savingAndDirectEncodingRejectOneByteOverTheCompletePackageLimit() {
+        val boundary = definitionAtPackageLimit()
+        val tooLarge = boundary.copy(description = boundary.description + "x")
+        val raw = WorkflowCodec.json.encodeToString(WorkflowPackage(definition = tooLarge, digest = WorkflowCodec.digest(tooLarge)))
+        assertEquals(WorkflowCodec.MAX_PACKAGE_BYTES + 1, raw.toByteArray(Charsets.UTF_8).size)
+        assertTrue(raw.length < WorkflowCodec.MAX_PACKAGE_BYTES)
+        // 定义本身仍未超限；必须把标准分享包的包头、摘要及缩进一起计入。
+        assertTrue(WorkflowCodec.json.encodeToString(tooLarge).toByteArray(Charsets.UTF_8).size < WorkflowCodec.MAX_PACKAGE_BYTES)
+        assertCode("package_too_large") { WorkflowCodec.validateDefinition(tooLarge, setOf("known")) }
+        assertCode("package_too_large") { WorkflowCodec.encodePackage(tooLarge) }
+        assertCode("package_too_large") { WorkflowCodec.decodePackage(raw) }
+    }
+
+    @Test fun compactImportStillMustFitTheStandardExportFormatBeforeInstallation() {
+        val boundary = definitionAtPackageLimit()
+        val tooLarge = boundary.copy(description = boundary.description + "x")
+        val compact = Json { encodeDefaults = true }.encodeToString(
+            WorkflowPackage(definition = tooLarge, digest = WorkflowCodec.digest(tooLarge)))
+        assertTrue(compact.toByteArray(Charsets.UTF_8).size < WorkflowCodec.MAX_PACKAGE_BYTES)
+        val decoded = WorkflowCodec.decodePackage(compact)
+        assertCode("package_too_large") { WorkflowCodec.validateDefinition(decoded.definition, setOf("known")) }
     }
 
     @Test fun importsRejectUnknownActionsAndAuthorDeviceReferences() {
