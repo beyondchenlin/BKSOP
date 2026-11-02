@@ -132,7 +132,9 @@ class DeviceExecutionGateTest {
     @Test(timeout = 10_000) fun exceptionInTheOwnerReleasesTheLease() = runTest {
         val expected = IllegalStateException("action failed")
         val thrown = runCatching { DeviceExecutionGate.withExclusive { throw expected } }.exceptionOrNull()
-        assertTrue(expected === thrown)
+        // Coroutine stack-trace recovery may copy the exception across a suspension boundary.
+        assertEquals(expected.javaClass, thrown?.javaClass)
+        assertEquals(expected.message, thrown?.message)
         assertEquals("available", DeviceExecutionGate.withExclusive { "available" })
     }
 }
